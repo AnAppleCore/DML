@@ -19,7 +19,7 @@ import shutil
 
 from tqdm import tqdm
 from utils import accuracy, AverageMeter
-from resnet import resnet32
+from resnet import resnet32, resnet18
 from tensorboard_logger import configure, log_value
 
 class Trainer(object):
@@ -72,6 +72,18 @@ class Trainer(object):
         self.resume = config.resume
         self.print_freq = config.print_freq
         self.model_name = config.save_name
+        self.backbone = config.backbone
+
+        self.space_interval = config.space_interval
+        self.use_space = self.space_interval > 0
+        self.space_counter = 0
+        self.space_length = int(self.space_interval * self.num_train)
+
+        if self.use_space:
+            print(f"[*] Spaced-KD enabled: interval={self.space_interval} epochs, "
+                  f"space_length={self.space_length} samples")
+        else:
+            print("[*] Spaced-KD disabled, using standard DML")
         
         self.model_num = config.model_num
         self.models = []
@@ -92,7 +104,10 @@ class Trainer(object):
 
         for i in range(self.model_num):
             # build models
-            model = resnet32()
+            if self.backbone == "resnet32":
+                model = resnet32()
+            elif self.backbone == "resnet18":
+                model = resnet18()
             if self.use_gpu:
                 model.cuda()
             
@@ -110,6 +125,15 @@ class Trainer(object):
 
         print('[*] Number of parameters of one model: {:,}'.format(
             sum([p.data.nelement() for p in self.models[0].parameters()])))
+    
+    @property
+    def disable_kd(self):
+        if not self.use_space:
+            return False
+        elif self.space_counter < self.space_length:
+            return True
+        else:
+            return False
     
     def train(self):
         """
@@ -200,13 +224,18 @@ class Trainer(object):
                     outputs.append(model(images))
                 for i in range(self.model_num):
                     ce_loss = self.loss_ce(outputs[i], labels)
-                    kl_loss = 0
-                    for j in range(self.model_num):
-                        if i!=j:
-                            kl_loss += self.loss_kl(F.log_softmax(outputs[i], dim = 1), 
-                                                    F.softmax(Variable(outputs[j]), dim=1))
-                    loss = ce_loss + kl_loss / (self.model_num - 1)
-                    
+                    if self.model_num == 1 or self.disable_kd:
+                        # single-model mode: only CE loss, no KL
+                        loss = ce_loss
+                    else:
+                        # multi-model DML: CE + averaged KL
+                        kl_loss = 0
+                        for j in range(self.model_num):
+                            if i!=j:
+                                kl_loss += self.loss_kl(F.log_softmax(outputs[i], dim = 1),
+                                                        F.softmax(Variable(outputs[j]), dim=1))
+                        loss = ce_loss + kl_loss / (self.model_num - 1)
+
                     # measure accuracy and record loss
                     prec = accuracy(outputs[i].data, labels.data, topk=(1,))[0]
                     losses[i].update(loss.item(), images.size()[0])
@@ -231,6 +260,20 @@ class Trainer(object):
                 )
                 self.batch_size = images.shape[0]
                 pbar.update(self.batch_size)
+
+                if self.use_space:
+                    prev_disable_kd = self.disable_kd
+                    self.space_counter += self.batch_size
+
+                    if self.space_counter >= 2 * self.space_length:
+                        self.space_counter = 0
+
+                    curr_disable_kd = self.disable_kd
+                    if prev_disable_kd != curr_disable_kd:
+                        if curr_disable_kd:
+                            print(f"[*] Spaced-KD: Disabling KD for next {self.space_interval} epoch(s)")
+                        else:
+                            print(f"[*] Spaced-KD: Enabling KD for next {self.space_interval} epoch(s)")
 
                 # log to tensorboard
                 if self.use_tensorboard:
@@ -263,12 +306,17 @@ class Trainer(object):
                 outputs.append(model(images))
             for i in range(self.model_num):
                 ce_loss = self.loss_ce(outputs[i], labels)
-                kl_loss = 0
-                for j in range(self.model_num):
-                    if i!=j:
-                        kl_loss += self.loss_kl(F.log_softmax(outputs[i], dim = 1),
-                                                F.softmax(Variable(outputs[j]), dim=1))
-                loss = ce_loss + kl_loss / (self.model_num - 1)
+                if self.model_num == 1:
+                    # single-model mode: only CE loss, no KL
+                    loss = ce_loss
+                else:
+                    # multi-model DML: CE + averaged KL
+                    kl_loss = 0
+                    for j in range(self.model_num):
+                        if i!=j:
+                            kl_loss += self.loss_kl(F.log_softmax(outputs[i], dim = 1),
+                                                    F.softmax(Variable(outputs[j]), dim=1))
+                    loss = ce_loss + kl_loss / (self.model_num - 1)
 
                 # measure accuracy and record loss
                 prec = accuracy(outputs[i].data, labels.data, topk=(1,))[0]
