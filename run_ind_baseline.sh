@@ -10,7 +10,7 @@ gpus=(5 6 7)
 for i in {0..2}; do
     seed=${seeds[$i]}
     gpu=${gpus[$i]}
-    exp_name="r18_ind_baseline_seed${seed}"
+    exp_name="r32_ind_baseline_seed${seed}"
 
     echo "Starting $exp_name on GPU $gpu"
 
@@ -20,7 +20,7 @@ for i in {0..2}; do
         $python_path -W ignore main.py \
             --save_name $exp_name \
             --model_num 1 \
-            --backbone resnet18 \
+            --backbone resnet32 \
             --data_dir $data_dir \
             --random_seed $seed
     "

@@ -19,7 +19,7 @@ import shutil
 
 from tqdm import tqdm
 from utils import accuracy, AverageMeter
-from resnet import resnet32, resnet18
+from resnet import resnet32, resnet18, resnet20
 from tensorboard_logger import configure, log_value
 
 class Trainer(object):
@@ -106,6 +106,8 @@ class Trainer(object):
             # build models
             if self.backbone == "resnet32":
                 model = resnet32()
+            elif self.backbone == "resnet20":
+                model = resnet20()
             elif self.backbone == "resnet18":
                 model = resnet18()
             if self.use_gpu:
